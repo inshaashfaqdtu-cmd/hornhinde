@@ -44,8 +44,30 @@ export const questionnaires = pgTable('questionnaires', {
 	id: serial('id').primaryKey(),
 	cpr: text('cpr').notNull(),
 	title: text('title').notNull(),
+	description: text('description'),
+	questionsJson: text('questions_json'),
 	status: text('status').default('ny').notNull(),
+	reviewedAt: timestamp('reviewed_at'),
 	createdAt: timestamp('created_at').defaultNow().notNull()
+});
+
+export const questionnaireResponses = pgTable('questionnaire_responses', {
+	id: serial('id').primaryKey(),
+	questionnaireId: integer('questionnaire_id').notNull(),
+	cpr: text('cpr').notNull(),
+
+	drynessScore: integer('dryness_score'),
+	rednessScore: integer('redness_score'),
+	painScore: integer('pain_score'),
+
+	blurredVision: boolean('blurred_vision').default(false).notNull(),
+	lightSensitivity: boolean('light_sensitivity').default(false).notNull(),
+	burningFeeling: boolean('burning_feeling').default(false).notNull(),
+
+	symptomStartDate: text('symptom_start_date'),
+	patientComment: text('patient_comment'),
+
+	submittedAt: timestamp('submitted_at').defaultNow().notNull()
 });
 
 export const patientTasks = pgTable('patient_tasks', {
