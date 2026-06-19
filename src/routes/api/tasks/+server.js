@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
+import { put } from '@vercel/blob';
 import { mkdir, writeFile } from 'fs/promises';
 import { join, extname } from 'path';
 import { randomUUID } from 'crypto';
@@ -17,25 +18,65 @@ function getTargetCpr({ cookies, url, body }) {
 	return patientCpr || '';
 }
 
-async function saveUploadedFiles(files) {
-	const savedFilePaths = [];
+function getRealFiles(files) {
+	return files.filter((file) => {
+		return file && file.size > 0 && file.name;
+	});
+}
+
+function getSafeExtension(fileName) {
+	const extension = extname(fileName);
+
+	if (!extension) {
+		return '.bin';
+	}
+
+	return extension;
+}
+
+async function saveFileLocally(file) {
 	const uploadDir = join(process.cwd(), 'static', 'uploads');
 
 	await mkdir(uploadDir, { recursive: true });
 
-	for (const file of files) {
-		if (!file || file.size === 0 || !file.name) {
-			continue;
+	const extension = getSafeExtension(file.name);
+	const safeFileName = randomUUID() + extension;
+	const filePath = join(uploadDir, safeFileName);
+
+	const arrayBuffer = await file.arrayBuffer();
+	await writeFile(filePath, Buffer.from(arrayBuffer));
+
+	return '/uploads/' + safeFileName;
+}
+
+async function saveFileToBlob(file) {
+	const extension = getSafeExtension(file.name);
+	const safeFileName = 'patient-tasks/' + randomUUID() + extension;
+
+	const blob = await put(safeFileName, file, {
+		access: 'public'
+	});
+
+	return blob.url;
+}
+
+async function saveUploadedFiles(files) {
+	const realFiles = getRealFiles(files);
+
+	if (realFiles.length === 0) {
+		return [];
+	}
+
+	const savedFilePaths = [];
+
+	for (const file of realFiles) {
+		if (process.env.VERCEL === '1' || process.env.BLOB_STORE_ID || process.env.BLOB_READ_WRITE_TOKEN) {
+			const blobUrl = await saveFileToBlob(file);
+			savedFilePaths.push(blobUrl);
+		} else {
+			const localPath = await saveFileLocally(file);
+			savedFilePaths.push(localPath);
 		}
-
-		const extension = extname(file.name);
-		const safeFileName = randomUUID() + extension;
-		const filePath = join(uploadDir, safeFileName);
-
-		const arrayBuffer = await file.arrayBuffer();
-		await writeFile(filePath, Buffer.from(arrayBuffer));
-
-		savedFilePaths.push('/uploads/' + safeFileName);
 	}
 
 	return savedFilePaths;
@@ -178,7 +219,10 @@ export async function PATCH({ request, cookies, url }) {
 				.set({
 					isDone: true,
 					submissionComment: submissionComment,
-					submittedFileName: savedFilePaths.join(', '),
+					submittedFileName:
+						savedFilePaths.length > 0
+							? savedFilePaths.join(', ')
+							: foundTasks[0].submittedFileName,
 					submittedAt: new Date()
 				})
 				.where(and(eq(patientTasks.id, taskId), eq(patientTasks.cpr, patientCpr)));
