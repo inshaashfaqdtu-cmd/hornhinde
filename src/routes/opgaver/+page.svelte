@@ -1,3 +1,4 @@
+```svelte
 <script>
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
@@ -453,6 +454,10 @@
 		}
 	}
 
+	function getSubmittedFileValue(task) {
+		return task.submittedFileName || task.submitted_file_name || '';
+	}
+
 	function getSubmittedFiles(fileValue) {
 		if (!fileValue) {
 			return [];
@@ -466,14 +471,29 @@
 
 	function getFileName(filePath) {
 		if (!filePath) {
-			return 'Fil';
+			return 'Vedhæftet fil';
 		}
 
-		return filePath.split('/').pop();
+		try {
+			const url = new URL(filePath);
+			const parts = url.pathname.split('/');
+			return parts[parts.length - 1] || 'Vedhæftet fil';
+		} catch {
+			const parts = filePath.split('/');
+			return parts[parts.length - 1] || 'Vedhæftet fil';
+		}
 	}
 
-	function isRealUploadPath(filePath) {
-		return filePath.startsWith('/uploads/');
+	function isClickableFilePath(filePath) {
+		if (!filePath) {
+			return false;
+		}
+
+		return (
+			filePath.startsWith('/uploads/') ||
+			filePath.startsWith('https://') ||
+			filePath.startsWith('http://')
+		);
 	}
 </script>
 
@@ -875,15 +895,15 @@
 								</div>
 							{/if}
 
-							{#if getSubmittedFiles(task.submittedFileName).length > 0}
+							{#if getSubmittedFiles(getSubmittedFileValue(task)).length > 0}
 								<div class="mt-4 bg-[#f3f8fc] rounded-xl px-4 py-3">
 									<p class="text-[#063b68] text-sm font-bold">
 										Vedhæftede filer
 									</p>
 
 									<div class="space-y-2 mt-2">
-										{#each getSubmittedFiles(task.submittedFileName) as filePath}
-											{#if isRealUploadPath(filePath)}
+										{#each getSubmittedFiles(getSubmittedFileValue(task)) as filePath}
+											{#if isClickableFilePath(filePath)}
 												<a
 													href={filePath}
 													target="_blank"
@@ -974,3 +994,4 @@
 		</div>
 	</main>
 </div>
+```
