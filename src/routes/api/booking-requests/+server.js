@@ -1,5 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { and, eq } from 'drizzle-orm';
+import { put } from '@vercel/blob';
 import { mkdir, writeFile } from 'fs/promises';
 import { join, extname } from 'path';
 import { randomUUID } from 'crypto';
@@ -35,6 +36,32 @@ function getRealFiles(files) {
 	});
 }
 
+async function saveFileLocally(file) {
+	const uploadDir = join(process.cwd(), 'static', 'uploads');
+
+	await mkdir(uploadDir, { recursive: true });
+
+	const extension = extname(file.name);
+	const safeFileName = randomUUID() + extension;
+	const filePath = join(uploadDir, safeFileName);
+
+	const arrayBuffer = await file.arrayBuffer();
+	await writeFile(filePath, Buffer.from(arrayBuffer));
+
+	return '/uploads/' + safeFileName;
+}
+
+async function saveFileToBlob(file) {
+	const extension = extname(file.name);
+	const safeFileName = 'booking-requests/' + randomUUID() + extension;
+
+	const blob = await put(safeFileName, file, {
+		access: 'public'
+	});
+
+	return blob.url;
+}
+
 async function saveUploadedFiles(files) {
 	const realFiles = getRealFiles(files);
 
@@ -42,24 +69,16 @@ async function saveUploadedFiles(files) {
 		return [];
 	}
 
-	if (process.env.VERCEL === '1') {
-		throw new Error('FILE_UPLOAD_NOT_SUPPORTED_ON_VERCEL');
-	}
-
 	const savedFilePaths = [];
-	const uploadDir = join(process.cwd(), 'static', 'uploads');
-
-	await mkdir(uploadDir, { recursive: true });
 
 	for (const file of realFiles) {
-		const extension = extname(file.name);
-		const safeFileName = randomUUID() + extension;
-		const filePath = join(uploadDir, safeFileName);
-
-		const arrayBuffer = await file.arrayBuffer();
-		await writeFile(filePath, Buffer.from(arrayBuffer));
-
-		savedFilePaths.push('/uploads/' + safeFileName);
+		if (process.env.BLOB_READ_WRITE_TOKEN) {
+			const blobUrl = await saveFileToBlob(file);
+			savedFilePaths.push(blobUrl);
+		} else {
+			const localPath = await saveFileLocally(file);
+			savedFilePaths.push(localPath);
+		}
 	}
 
 	return savedFilePaths;
@@ -150,16 +169,6 @@ export async function POST({ request, cookies }) {
 		);
 	} catch (error) {
 		console.error(error);
-
-		if (error.message === 'FILE_UPLOAD_NOT_SUPPORTED_ON_VERCEL') {
-			return json(
-				{
-					message:
-						'Filupload virker endnu ikke på online-versionen. Send anmodningen uden fil, eller brug den lokale version til filupload.'
-				},
-				{ status: 400 }
-			);
-		}
 
 		return json(
 			{ message: 'Der skete en fejl ved bookinganmodningen.' },
