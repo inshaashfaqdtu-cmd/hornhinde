@@ -29,17 +29,29 @@ function getTargetCpr({ cookies, url, body }) {
 	return patientCpr || '';
 }
 
+function getRealFiles(files) {
+	return files.filter((file) => {
+		return file && file.size > 0 && file.name;
+	});
+}
+
 async function saveUploadedFiles(files) {
+	const realFiles = getRealFiles(files);
+
+	if (realFiles.length === 0) {
+		return [];
+	}
+
+	if (process.env.VERCEL === '1') {
+		throw new Error('FILE_UPLOAD_NOT_SUPPORTED_ON_VERCEL');
+	}
+
 	const savedFilePaths = [];
 	const uploadDir = join(process.cwd(), 'static', 'uploads');
 
 	await mkdir(uploadDir, { recursive: true });
 
-	for (const file of files) {
-		if (!file || file.size === 0 || !file.name) {
-			continue;
-		}
-
+	for (const file of realFiles) {
 		const extension = extname(file.name);
 		const safeFileName = randomUUID() + extension;
 		const filePath = join(uploadDir, safeFileName);
@@ -84,11 +96,12 @@ export async function GET({ cookies, url }) {
 
 export async function POST({ request, cookies }) {
 	try {
-		const cpr = cookies.get('cpr');
+		const role = cookies.get('role');
+		const patientCpr = cookies.get('cpr');
 
-		if (!cpr) {
+		if (!patientCpr && role !== 'laege') {
 			return json(
-				{ message: 'Der blev ikke fundet et CPR-nummer for brugeren.' },
+				{ message: 'Der blev ikke fundet et CPR-nummer for patienten.' },
 				{ status: 401 }
 			);
 		}
@@ -101,9 +114,18 @@ export async function POST({ request, cookies }) {
 		const comment = formData.get('comment') || '';
 		const files = formData.getAll('files');
 
+		const cpr = patientCpr;
+
+		if (!cpr) {
+			return json(
+				{ message: 'Der blev ikke fundet et CPR-nummer for patienten.' },
+				{ status: 400 }
+			);
+		}
+
 		if (!appointmentType || !preferredDate || !preferredTime) {
 			return json(
-				{ message: 'Vælg aftaletype, ønsket dato og ønsket klokkeslæt.' },
+				{ message: 'Vælg aftaletype, dato og klokkeslæt.' },
 				{ status: 400 }
 			);
 		}
@@ -117,19 +139,27 @@ export async function POST({ request, cookies }) {
 			preferredTime: preferredTime,
 			comment: comment,
 			attachedFileName: savedFilePaths.join(', '),
-			status: 'afventer',
-			appointmentId: null
+			status: 'afventer'
 		});
 
 		return json(
 			{
-				message:
-					'Din bookinganmodning er sendt til afdelingen. Du får besked, når afdelingen har behandlet den.'
+				message: 'Bookinganmodningen er sendt til afdelingen.'
 			},
 			{ status: 201 }
 		);
 	} catch (error) {
 		console.error(error);
+
+		if (error.message === 'FILE_UPLOAD_NOT_SUPPORTED_ON_VERCEL') {
+			return json(
+				{
+					message:
+						'Filupload virker endnu ikke på online-versionen. Send anmodningen uden fil, eller brug den lokale version til filupload.'
+				},
+				{ status: 400 }
+			);
+		}
 
 		return json(
 			{ message: 'Der skete en fejl ved bookinganmodningen.' },
@@ -150,21 +180,21 @@ export async function PATCH({ request, cookies, url }) {
 		}
 
 		const body = await request.json();
+
 		const cpr = getTargetCpr({ cookies, url, body });
+		const requestId = Number(body.id);
+		const action = body.action;
 
 		if (!cpr) {
 			return json(
 				{ message: 'Der blev ikke fundet et CPR-nummer for patienten.' },
-				{ status: 401 }
+				{ status: 400 }
 			);
 		}
 
-		const requestId = body.id;
-		const action = body.action;
-
 		if (!requestId || !action) {
 			return json(
-				{ message: 'Bookinganmodningen kunne ikke behandles.' },
+				{ message: 'Der mangler booking-ID eller handling.' },
 				{ status: 400 }
 			);
 		}
@@ -183,38 +213,10 @@ export async function PATCH({ request, cookies, url }) {
 
 		const bookingRequest = foundRequests[0];
 
-		if (bookingRequest.status !== 'afventer') {
-			return json(
-				{
-					message:
-						'Denne bookinganmodning er allerede behandlet og kan ikke oprette en ny aftale igen.'
-				},
-				{ status: 400 }
-			);
-		}
-
-		if (action === 'reject') {
-			await db
-				.update(bookingRequests)
-				.set({
-					status: 'afvist',
-					appointmentId: null
-				})
-				.where(and(eq(bookingRequests.id, requestId), eq(bookingRequests.cpr, cpr)));
-
-			return json({
-				message: 'Bookinganmodningen er afvist.'
-			});
-		}
-
-		if (action === 'approve' || action === 'change') {
-			const appointmentDate = body.date || bookingRequest.preferredDate;
-			const appointmentTime = body.time || bookingRequest.preferredTime;
-			const location = body.location || 'Øjenambulatoriet';
-
-			if (!appointmentDate || !appointmentTime) {
+		if (action === 'approve') {
+			if (!bookingRequest.preferredDate || !bookingRequest.preferredTime) {
 				return json(
-					{ message: 'Vælg dato og klokkeslæt for aftalen.' },
+					{ message: 'Bookinganmodningen mangler dato eller klokkeslæt.' },
 					{ status: 400 }
 				);
 			}
@@ -223,32 +225,93 @@ export async function PATCH({ request, cookies, url }) {
 				.insert(appointments)
 				.values({
 					cpr: cpr,
-					date: appointmentDate,
-					time: appointmentTime,
+					date: bookingRequest.preferredDate,
+					time: bookingRequest.preferredTime,
 					title: getAppointmentTitle(bookingRequest.appointmentType),
-					location: location,
+					location: 'Øjenambulatoriet',
 					status: 'kommende'
 				})
 				.returning({
 					id: appointments.id
 				});
 
-			const appointmentId = insertedAppointments[0]?.id || null;
-
 			await db
 				.update(bookingRequests)
 				.set({
-					status: action === 'approve' ? 'godkendt' : 'ændret',
-					appointmentId: appointmentId
+					status: 'godkendt',
+					appointmentId: insertedAppointments[0]?.id || null
 				})
 				.where(and(eq(bookingRequests.id, requestId), eq(bookingRequests.cpr, cpr)));
 
 			return json({
-				message:
-					action === 'approve'
-						? 'Bookinganmodningen er godkendt, og aftalen er oprettet.'
-						: 'Bookinganmodningen er ændret, og aftalen er oprettet.',
-				appointmentId: appointmentId
+				message: 'Bookinganmodningen er godkendt, og aftalen er oprettet.'
+			});
+		}
+
+		if (action === 'change') {
+			const newDate = body.preferredDate;
+			const newTime = body.preferredTime;
+			const newLocation = body.location || 'Øjenambulatoriet';
+
+			if (!newDate || !newTime) {
+				return json(
+					{ message: 'Vælg ny dato og nyt klokkeslæt.' },
+					{ status: 400 }
+				);
+			}
+
+			const insertedAppointments = await db
+				.insert(appointments)
+				.values({
+					cpr: cpr,
+					date: newDate,
+					time: newTime,
+					title: getAppointmentTitle(bookingRequest.appointmentType),
+					location: newLocation,
+					status: 'kommende'
+				})
+				.returning({
+					id: appointments.id
+				});
+
+			await db
+				.update(bookingRequests)
+				.set({
+					preferredDate: newDate,
+					preferredTime: newTime,
+					status: 'ændret og godkendt',
+					appointmentId: insertedAppointments[0]?.id || null
+				})
+				.where(and(eq(bookingRequests.id, requestId), eq(bookingRequests.cpr, cpr)));
+
+			return json({
+				message: 'Bookinganmodningen er ændret og godkendt.'
+			});
+		}
+
+		if (action === 'reject') {
+			await db
+				.update(bookingRequests)
+				.set({
+					status: 'afvist'
+				})
+				.where(and(eq(bookingRequests.id, requestId), eq(bookingRequests.cpr, cpr)));
+
+			return json({
+				message: 'Bookinganmodningen er afvist.'
+			});
+		}
+
+		if (action === 'cancel') {
+			await db
+				.update(bookingRequests)
+				.set({
+					status: 'annulleret'
+				})
+				.where(and(eq(bookingRequests.id, requestId), eq(bookingRequests.cpr, cpr)));
+
+			return json({
+				message: 'Bookinganmodningen er annulleret.'
 			});
 		}
 
@@ -261,6 +324,53 @@ export async function PATCH({ request, cookies, url }) {
 
 		return json(
 			{ message: 'Bookinganmodningen kunne ikke behandles.' },
+			{ status: 500 }
+		);
+	}
+}
+
+export async function DELETE({ request, cookies, url }) {
+	try {
+		const role = cookies.get('role');
+
+		if (role !== 'laege') {
+			return json(
+				{ message: 'Kun læger kan slette bookinganmodninger.' },
+				{ status: 403 }
+			);
+		}
+
+		const body = await request.json();
+
+		const cpr = getTargetCpr({ cookies, url, body });
+		const requestId = Number(body.id);
+
+		if (!cpr) {
+			return json(
+				{ message: 'Der blev ikke fundet et CPR-nummer for patienten.' },
+				{ status: 400 }
+			);
+		}
+
+		if (!requestId) {
+			return json(
+				{ message: 'Der mangler booking-ID.' },
+				{ status: 400 }
+			);
+		}
+
+		await db
+			.delete(bookingRequests)
+			.where(and(eq(bookingRequests.id, requestId), eq(bookingRequests.cpr, cpr)));
+
+		return json({
+			message: 'Bookinganmodningen er slettet.'
+		});
+	} catch (error) {
+		console.error(error);
+
+		return json(
+			{ message: 'Bookinganmodningen kunne ikke slettes.' },
 			{ status: 500 }
 		);
 	}
