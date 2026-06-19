@@ -36,12 +36,22 @@ function getRealFiles(files) {
 	});
 }
 
+function getSafeExtension(fileName) {
+	const extension = extname(fileName);
+
+	if (!extension) {
+		return '.bin';
+	}
+
+	return extension;
+}
+
 async function saveFileLocally(file) {
 	const uploadDir = join(process.cwd(), 'static', 'uploads');
 
 	await mkdir(uploadDir, { recursive: true });
 
-	const extension = extname(file.name);
+	const extension = getSafeExtension(file.name);
 	const safeFileName = randomUUID() + extension;
 	const filePath = join(uploadDir, safeFileName);
 
@@ -52,7 +62,7 @@ async function saveFileLocally(file) {
 }
 
 async function saveFileToBlob(file) {
-	const extension = extname(file.name);
+	const extension = getSafeExtension(file.name);
 	const safeFileName = 'booking-requests/' + randomUUID() + extension;
 
 	const blob = await put(safeFileName, file, {
@@ -72,7 +82,7 @@ async function saveUploadedFiles(files) {
 	const savedFilePaths = [];
 
 	for (const file of realFiles) {
-		if (process.env.BLOB_READ_WRITE_TOKEN) {
+		if (process.env.VERCEL === '1' || process.env.BLOB_STORE_ID || process.env.BLOB_READ_WRITE_TOKEN) {
 			const blobUrl = await saveFileToBlob(file);
 			savedFilePaths.push(blobUrl);
 		} else {
